@@ -185,9 +185,22 @@ class WasteWrangler:
                 Finally, we insert the tuple and commit the transaction
                 '''
                 trip_tuple = None
-                if(selected_eID1 > selected_eID2): trip_tuple = tuple([selected_rID, selected_tID, start_time, "NULL", selected_eID1, selected_eID2, select_fID])
-                else: trip_tuple = tuple([selected_rID, selected_tID, start_time, "NULL", selected_eID2, selected_eID1, select_fID])
+                if(selected_eID1 > selected_eID2):
+                    trip_tuple = tuple([selected_rID, selected_tID, start_time, "NULL", selected_eID1, selected_eID2, select_fID])
+                else:
+                    trip_tuple = tuple([selected_rID, selected_tID, start_time, "NULL", selected_eID2, selected_eID1, select_fID])
                 curs.execute("INSERT INTO Trip VALUES (%s, %s, '%s', %s, %s, %s, %s)" % trip_tuple)
+
+                curs.execute("DROP VIEW IF EXISTS FreeDrivers")
+                curs.execute("DROP VIEW IF EXISTS DriversDoingTrips")
+                curs.execute("DROP VIEW IF EXISTS TruckDriverPair")
+                curs.execute("DROP VIEW IF EXISTS AvailableDrivers")
+                curs.execute("DROP VIEW IF EXISTS SameTruckTypeDriversDoingTrips")
+                curs.execute("DROP VIEW IF EXISTS AllSameTruckTypeDrivers")
+                curs.execute("DROP VIEW IF EXISTS AvailableTrucks")
+                curs.execute("DROP VIEW IF EXISTS SameDayMaintenance")
+                curs.execute("DROP VIEW IF EXISTS TrucksDoingTrips")
+                curs.execute("DROP VIEW IF EXISTS CandidateTrucks")
                 self.connection.commit()
     
             return True
@@ -200,36 +213,10 @@ class WasteWrangler:
         """Schedule the truck identified with <tid> for trips on <date> using
         the following approach:
         """
-        """
-            1. Find routes not already scheduled for <date>, for which <tid>
-               is able to carry the waste type. Schedule these by ascending
-               order of rIDs.
-
-            2. Give preference based on hireDate (employees who have the most
-               experience get priority), and break ties by choosing
-               the lower eID, such that at least one employee can
-               drive the truck type of <tid>.
-
-               The facility for the trip is the one with the lowest fID that can
-               handle the waste type of the route.
-
-               The volume for the scheduled trip should be null.
-
-            3. Continue scheduling, making sure to leave 30 minutes between
-               the end of one trip and the start of the next, using the
-               assumption that <tid> will travel an average of 5 kph.
-               Make sure that the last trip will not end after 4 p.m.
-
-        Return the number of trips that were scheduled successfully.
-
-        Your method should NOT raise an error.
-
-        While a realistic use case will provide a <date> in the near future, our
-        tests could use any valid value for <date>.
-        """
         
         ''' Representing how many trips were scheduled successfully '''
         successfully_scheduled=0
+        
         try:
             selected_tID=tid
             routes_to_schedule = list()
@@ -282,51 +269,71 @@ class WasteWrangler:
                 selected_fID=None
                 with self.connection.cursor() as curs:
                     '''
+                    1) Find those drivers that were hired before trip date that can also drive the given truck
+                    2) Find all those drivers who are busy with trips on that day
+                    3) Remove all those drivers who are busy from (1) to get free driver
+                    4) Prefer those who were hired earlier and have lower eID
                     '''
                     curs.execute("CREATE TEMPORARY VIEW ValidTruckTypeDrivers AS SELECT eID FROM Truck NATURAL JOIN Driver NATURAL JOIN Employee WHERE tID=%s AND %s>=hireDate", (selected_tID, date))
                     curs.execute("CREATE TEMPORARY VIEW BusyDriverPairs AS SELECT eID1, eID2 FROM Trip WHERE DATE(tTIME)='%s'" % (date))
                     curs.execute("CREATE TEMPORARY VIEW BusyDrivers AS (SELECT eID1 FROM BusyDriverPairs) UNION (SELECT eID2 FROM BusyDriverPairs)")
                     curs.execute("CREATE TEMPORARY VIEW FirstDrivers AS (SELECT * FROM ValidTruckTypeDrivers) EXCEPT (SELECT * FROM BusyDrivers)")
                     curs.execute("SELECT * FROM FirstDrivers NATURAL JOIN EMPLOYEE ORDER BY hireDate asc, eID asc")
+
+                    ''' If no drivers are available, return out of the function '''
                     first_drivers = curs.fetchall()
                     if len(first_drivers)==0:
                         self.connection.rollback()
                         return successfully_scheduled
                     selected_eID1 = first_drivers[0][0]
 
+                    ''' From all drivers excludig the one selected before, remove busy drivers to get the second driver '''
                     curs.execute("CREATE TEMPORARY VIEW SecondDrivers AS (SELECT eID FROM Driver WHERE eID!=%s) EXCEPT (SELECT * FROM BusyDrivers)" % (selected_eID1))
                     curs.execute("SELECT * FROM SecondDrivers NATURAL JOIN EMPLOYEE ORDER BY hireDate asc, eID asc")
+                    
+                    ''' If no drivers are available, return out of the function '''
                     second_drivers = curs.fetchall()
                     if len(second_drivers)==0:
                         self.connection.rollback()
                         return successfully_scheduled
                     selected_eID2 = second_drivers[0][0]
 
+                    ''' Get fID corresponding to the route that we are scheduling and prefer smaller fIDs '''
                     curs.execute("SELECT fID FROM RoutesToSchedule NATURAL JOIN Route NATURAL JOIN Facility ORDER BY fID asc")
+                    
+                    ''' If no facilities are available, return out of the function '''
                     facilities = curs.fetchall()
                     if len(facilities)==0:
                         self.connection.rollback()
                         return successfully_scheduled
                     selected_fID = facilities[0][0]
 
+                    '''
+                    All requirements satisfied. Create trip tuple to be inserted
+                    We compare the two eIDs to make sure that the first eID1 > eID2
+                    Finally, we insert the tuple, commit the transaction and increment the counter
+                    '''
                     trip_tuple = None
                     if(selected_eID1 >= selected_eID2):
                         trip_tuple = tuple([selected_rID, selected_tID, selected_time, "NULL", selected_eID1, selected_eID2, selected_fID])
                     else:
                         trip_tuple = tuple([selected_rID, selected_tID, selected_time, "NULL", selected_eID2, selected_eID1, selected_fID])
                     curs.execute("INSERT INTO Trip VALUES (%s, %s, '%s', %s, %s, %s, %s)" % trip_tuple)
+                    curs.execute("DROP VIEW IF EXISTS SecondDrivers")
+                    curs.execute("DROP VIEW IF EXISTS FirstDrivers")
+                    curs.execute("DROP VIEW IF EXISTS BusyDrivers")
+                    curs.execute("DROP VIEW IF EXISTS BusyDriverPairs")
+                    curs.execute("DROP VIEW IF EXISTS ValidTruckTypeDrivers")
                     self.connection.commit()
                     successfully_scheduled+=1
-
-                # with self.connection.cursor() as curs:
-                #     curs.execute("SELECT * FROM Trip")
-                #     answer=curs.fetchall()
-                    print(answer)
+            
+            ''' Dropping leftover tables '''
+            with self.connection.cursor() as curs:
+                curs.execute("DROP VIEW IF EXISTS RoutesToSchedule")
+                curs.execute("DROP VIEW IF EXISTS EmptyRoutes")
             return successfully_scheduled
 
-        except pg.Error as ex:
-            # print("BBBBBBRUHHHHHHH")
-            self.connection.rollback()
+        except:
             return successfully_scheduled
 
     def update_technicians(self, qualifications_file: TextIO) -> int:
@@ -335,32 +342,38 @@ class WasteWrangler:
             data= [tuple([e[0]+' '+e[1], e[2]]) for e in data]
             data= list(set(data))
 
-            # Check if name of employee exists in table Employee.
+            '''Check whether the employee exists in the Employee table'''
             with self.connection.cursor() as curs:
                 curs.execute("CREATE TEMPORARY TABLE TextFile (name varchar, truckType varchar(50), UNIQUE (name, truckType))")
                 curs.executemany("INSERT INTO TextFile (name, truckType) VALUES (%s, %s)", data)
 
-                # Consider only those names that are also present in the Employee Table
+                '''Consider only the names that exist in the Employee table'''
                 curs.execute("CREATE TEMPORARY VIEW View1 AS SELECT eID, truckType FROM Employee NATURAL JOIN TextFile")
-                # Consider only those trucktypes that are valid
+                '''We will only consider valid truckTypes'''
                 curs.execute("CREATE TEMPORARY VIEW View2 AS SELECT eID, truckType FROM View1 NATURAL JOIN (SELECT distinct truckType FROM TruckType) AS Temp")
-                # Remove if the technicians are already recorded to work on the corresponding truck type.
+                '''If the technicians are already recorded to work on a truckType, we remove them'''
                 curs.execute("CREATE TEMPORARY VIEW View3 AS SELECT * FROM View2 EXCEPT (SELECT eID, truckType FROM View2 NATURAL JOIN Technician)")
-                # Remove those entries where eID is a driver
+                '''Remove the entries where the eID is a driver'''
                 curs.execute("CREATE TEMPORARY VIEW View4 AS SELECT * FROM View3 EXCEPT (SELECT eID, truckType FROM View3 NATURAL JOIN Driver)")
                 curs.execute("SELECT * FROM View4")
                 technicians_to_add = curs.fetchall()
 
+                '''Return the updated technician list'''
                 if len(technicians_to_add)==0:
                     self.connection.rollback()
                     return 0
                 curs.executemany("INSERT INTO Technician(eID, truckType) VALUES (%s, %s)", technicians_to_add)
+                curs.execute("DROP VIEW IF EXISTS View4")
+                curs.execute("DROP VIEW IF EXISTS View3")
+                curs.execute("DROP VIEW IF EXISTS View2")
+                curs.execute("DROP VIEW IF EXISTS View1")
+                curs.execute("DROP Table IF EXISTS TextFile")
                 self.connection.commit()
             return len(technicians_to_add)
 
-        except pg.Error as ex:
+        except pg.Error:
             return 0
-
+    
     def workmate_sphere(self, eid: int) -> list[int]:
         """Return the workmate sphere of the driver identified by <eid>, as a
         list of eIDs.
@@ -369,31 +382,20 @@ class WasteWrangler:
             * Any employee who has been on a trip with <eid>.
             * Recursively, any employee who has been on a trip with an employee
               in <eid>'s workmate sphere is also in <eid>'s workmate sphere.
-
-        The returned list should NOT include <eid> and should NOT include
-        duplicates.
-
-        The order of the returned ids does NOT matter.
-
-        Your method should NOT return an error. If an error occurs, your method
-        should simply return an empty list.
         """
-        
 
         try:
+            ''' Check if the driver eID provided is valid '''
             does_driver_exist = False
             with self.connection.cursor() as curs:
                 curs.execute("SELECT * FROM Driver WHERE eID=%s" % (eid))
                 does_driver_exist = len(curs.fetchall()) != 0
 
-            # with self.connection.cursor() as curs:
-            #     curs.execute("SELECT * FROM Trip")
-            #     print(curs.fetchall())
-            
             if not does_driver_exist:
                 self.connection.rollback()
                 return []
-                
+
+            ''' Find all pairs of eIDs for every trip '''
             all_eID_pairs = set()
             with self.connection.cursor() as curs:
                 curs.execute("SELECT eID1, eID2 FROM Trip")
@@ -401,6 +403,7 @@ class WasteWrangler:
                     all_eID_pairs.add(tuple(eID_pair))
             all_eID_pairs = list(all_eID_pairs)
 
+            ''' Helper function to find direct partners of a supplied eID '''
             def get_partners_of_given_eID(eID):
                 pairs_of_given_eID = list(filter(lambda e: e[0]==eID or e[1]==eID , all_eID_pairs))
                 partners = set()
@@ -411,25 +414,32 @@ class WasteWrangler:
                 
                 return partners
 
+            ''' Set representing iput eID, workmates of input_eID and partner eIDs of input_eID and so on '''
             input_eID = set([eid])
             workmates = set([])
             eIDs_to_check = get_partners_of_given_eID(eid)
+
+            ''' If eIDs to check is non-empty, keep running the while loop '''
             while len(eIDs_to_check):
-                # print("eIDs To Check: ", eIDs_to_check)
+                ''' Remove one eID from the set and add it to the workmate_sphere '''
                 eID = eIDs_to_check.pop()
                 workmates.add(eID)
-                # print("Workmates: ", workmates)
+
+                ''' Get the direct partners of the above eID as those will also be workmates '''
                 partners_of_eID = get_partners_of_given_eID(eID)
-                # print("Partners of", eID, ":", partners_of_eID)
+
+                ''' Remove instances of input_eID and those eIDs that exist inside workmates_sphere already '''
                 partners_of_eID.difference_update(workmates, input_eID)
-                # print(partners_of_eID)
+
+                ''' Append partners from above to the set that needs to be checked '''
                 eIDs_to_check.update(partners_of_eID)
 
+            ''' Once all necessary eIDs are checked, exist out of the function '''
             return list(workmates)
-        except pg.Error as ex:
-            raise ex
+        
+        except:
             return []
-
+      
     def schedule_maintenance(self, date: dt.date) -> int:
         num_trucks_scheduled = 0
 
@@ -440,7 +450,7 @@ class WasteWrangler:
 
             cur.execute("CREATE TEMPORARY VIEW MaintainedTrucks AS SELECT DISTINCT tID FROM Maintenance WHERE mDATE BETWEEN '%s' AND '%s'" % (date_90_days_ago, date_10_days_after))
             cur.execute("CREATE TEMPORARY VIEW NotMaintainedTrucks AS (SELECT tID FROM Truck) EXCEPT (SELECT * FROM MaintainedTrucks)")
-            cur.execute("SELECT tID, trucktype FROM NotMaintainedTrucks NATURAL JOIN Truck")
+            cur.execute("SELECT tID, trucktype FROM NotMaintainedTrucks NATURAL JOIN Truck ORDER BY tID asc")
             trucks_to_maintain = cur.fetchall()
             if len(trucks_to_maintain)==0:
                 self.connection.rollback()
@@ -457,9 +467,9 @@ class WasteWrangler:
                     self.connection.rollback()
                     continue
 
-                # Iterate to find the ideal day on which maintenance can be scheduled
+                '''Iterate to find the ideal day on which maintenance can be scheduled'''
                 found_date = False
-                search_date = date
+                search_date = date + dt.timedelta(days=1)
 
                 while not found_date:
                     ''' If truck scheduled for trip on given search_date, look for next day '''
@@ -497,46 +507,36 @@ class WasteWrangler:
                     cur.execute("DROP VIEW AvailableTechnicians")
                     self.connection.commit()
 
+            cur.execute("DROP VIEW IF EXISTS NotMaintainedTrucks")
+            cur.execute("DROP VIEW IF EXISTS MaintainedTrucks")
             cur.close()
             return num_trucks_scheduled
 
-        except pg.Error as ex:
-            # You may find it helpful to uncomment this line while debugging,
-            # as it will show you all the details of the error that occurred:
-            raise ex
-            return 0
+        except:
+            return num_trucks_scheduled
 
     def reroute_waste(self, fid: int, date: dt.date) -> int:
         """Reroute the trips to <fid> on day <date> to another facility that
         takes the same type of waste. If there are many such facilities, pick
         the one with the smallest fID (that is not <fid>).
-
-        Return the number of re-routed trips.
-
-        Don't worry about too many trips arriving at the same time to the same
-        facility. Each facility has ample receiving facility.
-
-        Your method should NOT return an error. If an error occurs, your method
-        should simply return 0 i.e., no trips have been re-routed.
-
-        While a realistic use case will provide a <date> in the near future, our
-        tests could use any valid value for <date>.
-
-        Assume this happens before any of the trips have reached <fid>.
         """
+
         try:
+            ''' Check if there are any trips to given facility on given date '''
             trips_to_reroute=list()
             with self.connection.cursor() as curs:
                 curs.execute("SELECT * FROM TRIP WHERE fID=%s AND DATE(tTIME)='%s'" % (fid, date))
                 trips_to_reroute=curs.fetchall()
             if len(trips_to_reroute)==0: return 0
 
+            ''' Find waste_type of the facility in concern, should not fail '''
             waste_type=None
             with self.connection.cursor() as curs:
                 curs.execute("SELECT wasteType FROM Facility WHERE fID=%s" % (fid))
                 waste_type = curs.fetchone()[0]
             if waste_type is None: return 0
 
+            ''' Find a list of all facilities that can act as replacement ordered by lowest eID '''
             candidate_facilities=list()
             with self.connection.cursor() as curs:
                 curs.execute("SELECT fID FROM Facility WHERE wasteType='%s' AND fID!=%s ORDER BY fID asc" % (waste_type, fid))
@@ -550,10 +550,7 @@ class WasteWrangler:
             self.connection.commit()
             return len(trips_to_reroute)
         
-        except pg.Error as ex:
-            # You may find it helpful to uncomment this line while debugging,
-            # as it will show you all the details of the error that occurred:
-            raise ex
+        except:
             return 0
 
     # =========================== Helper methods ============================= #
