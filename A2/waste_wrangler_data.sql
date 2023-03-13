@@ -64,7 +64,6 @@ insert into truck values(4, 'C', 21);
 insert into truck values(5, 'D', 12);
 insert into truck values(6, 'E', 15);
 insert into truck values(7, 'E', 13);
-insert into truck values(8, 'C', 23); -- capacity is in cubic metres
 --
 -- a few facilities
 --
@@ -85,19 +84,13 @@ insert into maintenance values
 (3, 7, '2021-10-25'), (6, 8, '2021-03-02');
 insert into maintenance values
 (4, 9, '2021-05-01'), (2, 5, '2022-02-24'), (7, 8, '2021-12-13');
-insert into maintenance values
-(1, 6, '2023-01-23'),
-(2, 6, '2023-03-24');
 --
 -- a few routes
 --
 insert into route values
-(2, 'compost', 15),
-(3, 'landfill', 15),
 (1, 'plastic recycling', 15);
 --
 -- a few trips
 --
 insert into trip values
--- (1, 1, '2023-05-04 08:15:06', 17, 3, 1, 1),
 (1, 1, '2023-05-03 08:15:06', 17, 3, 1, 1);
